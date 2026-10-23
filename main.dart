@@ -406,6 +406,7 @@ class Visor extends StatefulWidget {
 class _V extends State<Visor> {
   late final PageController pc = PageController(initialPage: widget.i);
   final bloqueo = ValueNotifier<bool>(false); // true = toques bloqueados en vídeo
+  final ui = ValueNotifier<bool>(true); // false = interfaz oculta mientras se ve un vídeo
   late int cur = widget.i;
   Timer? tm;
 
@@ -413,6 +414,7 @@ class _V extends State<Visor> {
   void dispose() {
     tm?.cancel();
     bloqueo.dispose();
+    ui.dispose();
     super.dispose();
   }
 
@@ -466,11 +468,14 @@ class _V extends State<Visor> {
             controller: pc,
             physics: b ? const NeverScrollableScrollPhysics() : null,
             itemCount: widget.items.length,
-            onPageChanged: (n) => setState(() => cur = n),
+            onPageChanged: (n) {
+              ui.value = true;
+              setState(() => cur = n);
+            },
             itemBuilder: (_, n) {
               final x = widget.items[n];
               return x.type == AssetType.video
-                  ? VideoPag(x, bloqueo)
+                  ? VideoPag(x, bloqueo, ui)
                   : InteractiveViewer(
                       minScale: 0.3,
                       maxScale: 8,
@@ -478,9 +483,9 @@ class _V extends State<Visor> {
             },
           ),
         ),
-        ValueListenableBuilder<bool>(
-          valueListenable: bloqueo,
-          builder: (_, b, __) => b
+        AnimatedBuilder(
+          animation: Listenable.merge([bloqueo, ui]),
+          builder: (_, __) => (bloqueo.value || !ui.value)
               ? const SizedBox.shrink()
               : Stack(fit: StackFit.expand, children: [
                   SafeArea(
@@ -528,8 +533,8 @@ class _V extends State<Visor> {
 // ───────────── Reproductor: progreso, ±10 s, velocidad, volumen y bloqueo ─────────────
 class VideoPag extends StatefulWidget {
   final AssetEntity a;
-  final ValueNotifier<bool> bloqueo;
-  const VideoPag(this.a, this.bloqueo, {super.key});
+  final ValueNotifier<bool> bloqueo, ui;
+  const VideoPag(this.a, this.bloqueo, this.ui, {super.key});
   @override
   State<VideoPag> createState() => _VP();
 }
@@ -540,10 +545,25 @@ class _VP extends State<VideoPag> {
   double vol = 1, tx = 0;
   int vel = 1;
   bool loop = false, horiz = false;
+  Timer? t;
+
+  void _r() {
+    if (mounted) setState(() {});
+  }
+
+  // Muestra los controles y los oculta solos a los 3 s si el vídeo se está reproduciendo.
+  void mostrar() {
+    t?.cancel();
+    widget.ui.value = true;
+    t = Timer(const Duration(seconds: 3), () {
+      if (mounted && v?.value.isPlaying == true) widget.ui.value = false;
+    });
+  }
 
   @override
   void initState() {
     super.initState();
+    widget.ui.addListener(_r);
     widget.a.file.then((f) {
       if (f == null) return;
       v = VideoPlayerController.file(f)..initialize().then((_) => mounted ? setState(() {}) : null);
@@ -552,6 +572,8 @@ class _VP extends State<VideoPag> {
 
   @override
   void dispose() {
+    t?.cancel();
+    widget.ui.removeListener(_r);
     v?.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -572,11 +594,21 @@ class _VP extends State<VideoPag> {
     final p = v;
     if (p == null || !p.value.isInitialized) return const Center(child: CircularProgressIndicator());
     const b70 = TextStyle(color: Colors.white70, fontSize: 12);
+    final ver = widget.ui.value;
     return ValueListenableBuilder<bool>(
       valueListenable: widget.bloqueo,
       builder: (_, bloq, __) => Stack(alignment: Alignment.center, children: [
         GestureDetector(
-          onTap: bloq ? null : () => setState(() => p.value.isPlaying ? p.pause() : p.play()),
+          onTap: bloq
+              ? null
+              : () {
+                  if (ver) {
+                    t?.cancel();
+                    widget.ui.value = false;
+                  } else {
+                    mostrar();
+                  }
+                },
           onDoubleTapDown: bloq ? null : (d) => tx = d.globalPosition.dx,
           // Doble toque a la izquierda: -10 s. A la derecha: +10 s.
           onDoubleTap: bloq ? null : () => saltar(tx < MediaQuery.of(c).size.width / 2 ? -10 : 10),
@@ -600,7 +632,7 @@ class _VP extends State<VideoPag> {
               ),
             ),
           )
-        else
+        else if (ver)
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -623,12 +655,25 @@ class _VP extends State<VideoPag> {
                     Text(hms(val.duration), style: b70),
                   ]),
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    IconButton(icon: const Icon(Icons.replay_10, color: Colors.white), onPressed: () => saltar(-10)),
+                    IconButton(icon: const Icon(Icons.replay_10, color: Colors.white), onPressed: () {
+                      saltar(-10);
+                      mostrar();
+                    }),
                     IconButton(
                         iconSize: 34,
                         icon: Icon(val.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
-                        onPressed: () => val.isPlaying ? p.pause() : p.play()),
-                    IconButton(icon: const Icon(Icons.forward_10, color: Colors.white), onPressed: () => saltar(10)),
+                        onPressed: () {
+                          if (val.isPlaying) {
+                            p.pause();
+                          } else {
+                            p.play();
+                          }
+                          mostrar();
+                        }),
+                    IconButton(icon: const Icon(Icons.forward_10, color: Colors.white), onPressed: () {
+                      saltar(10);
+                      mostrar();
+                    }),
                     TextButton(
                         onPressed: () {
                           vel = (vel + 1) % vels.length;
@@ -648,6 +693,7 @@ class _VP extends State<VideoPag> {
                         onChanged: (x) {
                           setState(() => vol = x);
                           p.setVolume(x);
+                          mostrar();
                         },
                       ),
                     ),
