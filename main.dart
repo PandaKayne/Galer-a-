@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -185,7 +186,9 @@ class Album extends StatefulWidget {
 class _Al extends State<Album> {
   static const tamanos = [2, 3, 4, 6, 9];
   final sc = ScrollController();
+  List<AssetEntity> todos = [];
   List<AssetEntity> items = [];
+  int filtro = 0;
   int cols = 4;
   final sel = <String>{};
 
@@ -212,8 +215,13 @@ class _Al extends State<Album> {
 
   Future<void> _cargar() async {
     final l = await widget.path.getAssetListRange(start: 0, end: 5000);
-    if (mounted) setState(() => items = l);
+    todos = l;
+    if (mounted) setState(aplicar);
   }
+
+  void aplicar() => items = todos
+      .where((x) => filtro == 0 || (filtro == 1 && x.type == AssetType.image) || (filtro == 2 && x.type == AssetType.video))
+      .toList();
 
   void irA(DateTime dia, double ancho) {
     final fin = DateTime(dia.year, dia.month, dia.day, 23, 59, 59);
@@ -322,6 +330,21 @@ class _Al extends State<Album> {
                     onPressed: () => setState(() => cols = tamanos[(tamanos.indexOf(cols) + 1) % tamanos.length])),
               ])),
             ),
+            Row(children: [
+              const SizedBox(width: 12),
+              for (final e in ['Todo', 'Fotos', 'Vídeos'].asMap().entries)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(e.value),
+                    selected: filtro == e.key,
+                    onSelected: (_) => setState(() {
+                      filtro = e.key;
+                      aplicar();
+                    }),
+                  ),
+                ),
+            ]),
             Expanded(
               child: GridView.builder(
                 controller: sc,
@@ -332,9 +355,15 @@ class _Al extends State<Album> {
                 itemBuilder: (_, n) {
                   final a = items[n];
                   return GestureDetector(
-                    onTap: () => sel.isNotEmpty
-                        ? setState(() => sel.contains(a.id) ? sel.remove(a.id) : sel.add(a.id))
-                        : Navigator.push(c, MaterialPageRoute(builder: (_) => Visor(items, n))),
+                    onTap: () {
+                      if (sel.isNotEmpty) {
+                        setState(() {
+                          if (!sel.remove(a.id)) sel.add(a.id);
+                        });
+                      } else {
+                        Navigator.push(c, MaterialPageRoute(builder: (_) => Visor(items, n)));
+                      }
+                    },
                     onLongPress: () => setState(() => sel.add(a.id)),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(14),
@@ -378,11 +407,45 @@ class _V extends State<Visor> {
   late final PageController pc = PageController(initialPage: widget.i);
   final bloqueo = ValueNotifier<bool>(false); // true = toques bloqueados en vídeo
   late int cur = widget.i;
+  Timer? tm;
 
   @override
   void dispose() {
+    tm?.cancel();
     bloqueo.dispose();
     super.dispose();
+  }
+
+  // Presentación automática: pasa de foto cada 3 s (espera en los vídeos).
+  void toggleShow() {
+    if (tm != null) {
+      tm!.cancel();
+      setState(() => tm = null);
+      return;
+    }
+    setState(() => tm = Timer.periodic(const Duration(seconds: 3), (_) {
+          if (cur >= widget.items.length - 1) return toggleShow();
+          if (widget.items[cur].type == AssetType.video) return;
+          pc.nextPage(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut);
+        }));
+  }
+
+  // Favoritos del sistema (Android 11+). Se llama de forma dinámica para no romper la compilación.
+  bool esFav(AssetEntity a) {
+    try {
+      return (a as dynamic).isFavorite == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> favorito(AssetEntity a) async {
+    try {
+      await (PhotoManager.editor.android as dynamic).favoriteAsset(entity: a, favorite: !esFav(a));
+      final n = await (a as dynamic).obtainForNewProperties();
+      if (n != null) widget.items[cur] = n as AssetEntity;
+      if (mounted) setState(() {});
+    } catch (_) {}
   }
 
   @override
@@ -426,6 +489,12 @@ class _V extends State<Visor> {
                       child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                         IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => Navigator.pop(c)),
                         Row(mainAxisSize: MainAxisSize.min, children: [
+                          IconButton(
+                              icon: Icon(esFav(a) ? Icons.favorite : Icons.favorite_border, color: Colors.white),
+                              onPressed: () => favorito(a)),
+                          IconButton(
+                              icon: Icon(tm == null ? Icons.slideshow : Icons.stop_circle_outlined, color: Colors.white),
+                              onPressed: toggleShow),
                           IconButton(icon: const Icon(Icons.share, color: Colors.white), onPressed: () => compartir(a)),
                           IconButton(icon: const Icon(Icons.info_outline, color: Colors.white), onPressed: () => detalles(c, a)),
                           IconButton(
@@ -470,6 +539,7 @@ class _VP extends State<VideoPag> {
   VideoPlayerController? v;
   double vol = 1, tx = 0;
   int vel = 1;
+  bool loop = false, horiz = false;
 
   @override
   void initState() {
@@ -483,7 +553,8 @@ class _VP extends State<VideoPag> {
   @override
   void dispose() {
     v?.dispose();
-    widget.bloqueo.value = false;
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -580,6 +651,22 @@ class _VP extends State<VideoPag> {
                         },
                       ),
                     ),
+                    IconButton(
+                        icon: Icon(Icons.repeat, color: loop ? Colors.white : Colors.white38),
+                        onPressed: () {
+                          loop = !loop;
+                          p.setLooping(loop);
+                          setState(() {});
+                        }),
+                    IconButton(
+                        icon: const Icon(Icons.screen_rotation, color: Colors.white),
+                        onPressed: () {
+                          horiz = !horiz;
+                          SystemChrome.setPreferredOrientations(
+                              horiz ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight] : DeviceOrientation.values);
+                          SystemChrome.setEnabledSystemUIMode(horiz ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
+                          setState(() {});
+                        }),
                   ]),
                 ]),
               )),
@@ -599,7 +686,7 @@ Future<void> compartir(AssetEntity a) async {
 }
 
 Future<void> detalles(BuildContext c, AssetEntity a) async {
-  final nombre = await a.titleAsync;
+  final nombre = '${await a.titleAsync}';
   final f = await a.originFile;
   final bytes = f == null ? 0 : await f.length();
   var ubic = '';
