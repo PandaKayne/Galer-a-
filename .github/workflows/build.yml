@@ -1,0 +1,37 @@
+name: Compilar APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Crear proyecto y copiar tus archivos
+        run: |
+          flutter create --org com.example --project-name galeria_cristal --platforms=android app
+          cp main.dart app/lib/main.dart
+          cp MainActivity.kt app/android/app/src/main/kotlin/com/example/galeria_cristal/MainActivity.kt
+          cd app
+          flutter pub add photo_manager photo_manager_image_provider video_player
+          sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>\n    <application#' android/app/src/main/AndroidManifest.xml
+
+      - name: Compilar (arm64 y 32 bits)
+        working-directory: app
+        run: flutter build apk --release --target-platform android-arm,android-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: galeria-cristal-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
