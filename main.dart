@@ -692,7 +692,9 @@ Future<void> detalles(BuildContext c, AssetEntity a) async {
   var ubic = '';
   try {
     final ll = await a.latlngAsync();
-    if (ll.latitude != null && ll.latitude != 0) ubic = '${ll.latitude}, ${ll.longitude}';
+    final la = ll?.latitude;
+    final lo = ll?.longitude;
+    if (la != null && lo != null && la != 0) ubic = '$la, $lo';
   } catch (_) {}
   final t = a.createDateTime;
   final filas = <String>[
