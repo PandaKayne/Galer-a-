@@ -1,7 +1,7 @@
 name: Compilar APK
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # se ejecuta a mano con el botón "Run workflow"
 
 jobs:
   apk:
@@ -25,11 +25,11 @@ jobs:
           cp MainActivity.kt app/android/app/src/main/kotlin/com/example/galeria_cristal/MainActivity.kt
           cd app
           flutter pub add photo_manager photo_manager_image_provider video_player
-          sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>\n    <application#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>\n    <application#' android/app/src/main/AndroidManifest.xml
 
-      - name: Compilar (arm64 y 32 bits)
+      - name: Compilar (arm64, 32 bits y x86_64)
         working-directory: app
-        run: flutter build apk --release --target-platform android-arm,android-arm64
+        run: flutter build apk --release --target-platform android-arm,android-arm64,android-x64
 
       - uses: actions/upload-artifact@v4
         with:
