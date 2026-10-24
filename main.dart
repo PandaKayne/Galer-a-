@@ -61,29 +61,51 @@ class Albumes extends StatefulWidget {
   State<Albumes> createState() => _A();
 }
 
-class _A extends State<Albumes> {
+class _A extends State<Albumes> with WidgetsBindingObserver {
   List<AssetPathEntity> paths = [];
   final cuenta = <String, int>{};
   final portada = <String, AssetEntity?>{};
   Uint8List? fondo;
   bool permiso = true;
+  bool pedir = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _init();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     PhotoManager.removeChangeCallback(_cb);
     super.dispose();
   }
 
   void _cb(MethodCall c) => _cargar();
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) _fondo();
+  }
+
+  Future<void> _fondo() async {
+    final b = await leerFondo();
+    var n = false;
+    try {
+      n = await const MethodChannel('wallpaper').invokeMethod<bool>('necesita') ?? false;
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        fondo = b;
+        pedir = n;
+      });
+    }
+  }
+
   Future<void> _init() async {
-    leerFondo().then((b) => mounted ? setState(() => fondo = b) : null);
+    _fondo();
     final p = await PhotoManager.requestPermissionExtend();
     if (!p.hasAccess) {
       setState(() => permiso = false);
@@ -120,8 +142,20 @@ class _A extends State<Albumes> {
               child: cristal(Row(children: [
                 Expanded(child: Text(fecha(DateTime.now()), style: _blanco)),
                 Text('${paths.length} álbumes', style: const TextStyle(color: Colors.white70)),
+                IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.white),
+                    onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) => Papelera(fondo)))),
               ])),
             ),
+            if (pedir)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: GestureDetector(
+                  onTap: () => const MethodChannel('wallpaper').invokeMethod('pedir'),
+                  child: cristal(const Text('Toca aquí para activar el fondo de pantalla (Android 13 o superior)',
+                      style: TextStyle(color: Colors.white))),
+                ),
+              ),
             Expanded(
               child: !permiso
                   ? Center(
@@ -614,7 +648,18 @@ class _VP extends State<VideoPag> {
           onDoubleTap: bloq ? null : () => saltar(tx < MediaQuery.of(c).size.width / 2 ? -10 : 10),
           child: AspectRatio(aspectRatio: p.value.aspectRatio, child: VideoPlayer(p)),
         ),
-        if (!p.value.isPlaying && !bloq) const IgnorePointer(child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 72)),
+        ValueListenableBuilder<VideoPlayerValue>(
+          valueListenable: p,
+          builder: (_, val, __) => (val.isPlaying || bloq)
+              ? const SizedBox.shrink()
+              : IconButton(
+                  iconSize: 84,
+                  icon: const Icon(Icons.play_circle_fill, color: Colors.white70),
+                  onPressed: () {
+                    p.play();
+                    mostrar();
+                  }),
+        ),
         if (bloq)
           Align(
             alignment: Alignment.centerRight,
@@ -764,4 +809,133 @@ Future<void> detalles(BuildContext c, AssetEntity a) async {
       ])),
     ),
   );
+}
+
+// ───────────── Papelera: ver, restaurar y borrar definitivamente ─────────────
+class Papelera extends StatefulWidget {
+  final Uint8List? fondo;
+  const Papelera(this.fondo, {super.key});
+  @override
+  State<Papelera> createState() => _P();
+}
+
+class _P extends State<Papelera> with WidgetsBindingObserver {
+  static const _ch = MethodChannel('wallpaper');
+  List<Map> items = [];
+  final sel = <int>{};
+  bool cargando = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _cargar();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // Al volver del cuadro de confirmación del sistema, se actualiza la lista.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) _cargar();
+  }
+
+  Future<void> _cargar() async {
+    List l = [];
+    try {
+      l = await _ch.invokeMethod<List>('papelera') ?? [];
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      items = l.map((e) => Map.from(e as Map)).toList();
+      sel.removeWhere((id) => !items.any((x) => x['id'] == id));
+      cargando = false;
+    });
+  }
+
+  Future<void> _accion(bool borrar) async {
+    final pick = items.where((x) => sel.contains(x['id'])).toList();
+    try {
+      await _ch.invokeMethod('accion', {
+        'ids': pick.map((x) => x['id']).toList(),
+        'videos': pick.map((x) => x['video']).toList(),
+        'borrar': borrar,
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    final ahora = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return Scaffold(
+      body: Stack(fit: StackFit.expand, children: [
+        fondoW(widget.fondo),
+        SafeArea(
+          child: Column(children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: cristal(Row(children: [
+                IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(c)),
+                Expanded(child: Text(sel.isEmpty ? 'Papelera' : '${sel.length} seleccionadas', style: _blanco)),
+                if (sel.isNotEmpty) ...[
+                  IconButton(icon: const Icon(Icons.restore_from_trash, color: Colors.white), onPressed: () => _accion(false)),
+                  IconButton(icon: const Icon(Icons.delete_forever, color: Colors.white), onPressed: () => _accion(true)),
+                ],
+              ])),
+            ),
+            Expanded(
+              child: items.isEmpty
+                  ? Center(
+                      child: Text(cargando ? 'Cargando…' : 'La papelera está vacía',
+                          style: const TextStyle(color: Colors.white70)))
+                  : GridView.builder(
+                      padding: const EdgeInsets.all(6),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3, mainAxisSpacing: 6, crossAxisSpacing: 6),
+                      itemCount: items.length,
+                      itemBuilder: (_, n) {
+                        final x = items[n];
+                        final id = x['id'] as int;
+                        final t = x['thumb'] as Uint8List?;
+                        final exp = x['expira'] as int;
+                        final dias = exp == 0 ? null : (exp - ahora) ~/ 86400;
+                        return GestureDetector(
+                          onTap: () => setState(() {
+                            if (!sel.remove(id)) sel.add(id);
+                          }),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: Stack(fit: StackFit.expand, children: [
+                              t != null ? Image.memory(t, fit: BoxFit.cover) : Container(color: Colors.white12),
+                              if (x['video'] == true)
+                                const Positioned(right: 6, bottom: 6, child: Icon(Icons.play_circle, color: Colors.white, size: 22)),
+                              if (dias != null)
+                                Positioned(
+                                  left: 6,
+                                  top: 6,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                                    child: Text('${dias < 0 ? 0 : dias} d', style: const TextStyle(color: Colors.white, fontSize: 11)),
+                                  ),
+                                ),
+                              if (sel.contains(id))
+                                Container(
+                                    color: Colors.blue.withOpacity(.45),
+                                    child: const Icon(Icons.check_circle, color: Colors.white, size: 30)),
+                            ]),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
 }
