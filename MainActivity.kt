@@ -6,7 +6,9 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.media.ThumbnailUtils
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +20,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(engine: FlutterEngine) {
@@ -108,7 +111,8 @@ class MainActivity : FlutterActivity() {
                     MediaStore.Files.FileColumns._ID,
                     MediaStore.Files.FileColumns.MEDIA_TYPE,
                     MediaStore.MediaColumns.DISPLAY_NAME,
-                    MediaStore.MediaColumns.DATE_EXPIRES
+                    MediaStore.MediaColumns.DATE_EXPIRES,
+                    MediaStore.MediaColumns.DATA
                 )
                 contentResolver.query(MediaStore.Files.getContentUri("external"), cols, args, null)?.use { c ->
                     while (c.moveToNext() && lista.size < 300) {
@@ -116,14 +120,27 @@ class MainActivity : FlutterActivity() {
                         val video = c.getInt(1) == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
                         val nombre = c.getString(2) ?: ""
                         val expira = c.getLong(3)
+                        val ruta: String? = c.getString(4)
                         var thumb: ByteArray? = null
+                        var bmp: Bitmap? = null
                         try {
-                            val uri = MediaStore.setIncludeTrashed(uriDe(id, video))
-                            val bmp = contentResolver.loadThumbnail(uri, Size(256, 256), null)
+                            bmp = contentResolver.loadThumbnail(uriDe(id, video), Size(256, 256), null)
+                        } catch (e: Exception) {
+                        }
+                        if (bmp == null && ruta != null) {
+                            try {
+                                bmp = if (video) {
+                                    ThumbnailUtils.createVideoThumbnail(File(ruta), Size(256, 256), null)
+                                } else {
+                                    BitmapFactory.decodeFile(ruta, BitmapFactory.Options().apply { inSampleSize = 4 })
+                                }
+                            } catch (e: Exception) {
+                            }
+                        }
+                        if (bmp != null) {
                             val out = ByteArrayOutputStream()
                             bmp.compress(Bitmap.CompressFormat.JPEG, 70, out)
                             thumb = out.toByteArray()
-                        } catch (e: Exception) {
                         }
                         lista.add(mapOf("id" to id, "video" to video, "nombre" to nombre, "expira" to expira, "thumb" to thumb))
                     }
@@ -144,7 +161,7 @@ class MainActivity : FlutterActivity() {
     private fun accion(ids: List<*>?, videos: List<*>?, borrar: Boolean, result: MethodChannel.Result) {
         try {
             if (Build.VERSION.SDK_INT >= 30 && ids != null && videos != null && ids.isNotEmpty()) {
-                val uris = ids.indices.map { MediaStore.setIncludeTrashed(uriDe((ids[it] as Number).toLong(), videos[it] == true)) }
+                val uris = ids.indices.map { uriDe((ids[it] as Number).toLong(), videos[it] == true) }
                 val pi = if (borrar) MediaStore.createDeleteRequest(contentResolver, uris)
                 else MediaStore.createTrashRequest(contentResolver, uris, false)
                 startIntentSenderForResult(pi.intentSender, 4242, null, 0, 0, 0)
