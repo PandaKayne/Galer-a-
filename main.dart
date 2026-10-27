@@ -6,7 +6,12 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:video_player/video_player.dart';
 
-void main() => runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: Albumes()));
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  PaintingBinding.instance.imageCache.maximumSize = 1000;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 250 << 20;
+  runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: Albumes()));
+}
 
 const _dias = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
 const _meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -120,11 +125,11 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
     final l = await PhotoManager.getAssetPathList(
       filterOption: FilterOptionGroup(orders: [const OrderOption(type: OrderOptionType.createDate, asc: false)]),
     );
-    for (final x in l) {
+    await Future.wait(l.map((x) async {
       cuenta[x.id] = await x.assetCountAsync;
       final r = await x.getAssetListRange(start: 0, end: 1);
       portada[x.id] = r.isEmpty ? null : r.first;
-    }
+    }));
     l.removeWhere((x) => cuenta[x.id] == 0);
     l.sort((a, b) => a.isAll ? -1 : (b.isAll ? 1 : cuenta[b.id]!.compareTo(cuenta[a.id]!)));
     if (mounted) setState(() => paths = l);
@@ -223,6 +228,7 @@ class _Al extends State<Album> {
   List<AssetEntity> todos = [];
   List<AssetEntity> items = [];
   int filtro = 0;
+  bool nuevasPrimero = true;
   int cols = 4;
   final sel = <String>{};
 
@@ -248,18 +254,26 @@ class _Al extends State<Album> {
   void _cb(MethodCall c) => _cargar();
 
   Future<void> _cargar() async {
-    final l = await widget.path.getAssetListRange(start: 0, end: 5000);
+    final total = await widget.path.assetCountAsync;
+    final l = List<AssetEntity>.of(await widget.path.getAssetListRange(start: 0, end: total));
+    l.sort((a, b) => b.createDateTime.compareTo(a.createDateTime)); // siempre de la más nueva a la más vieja
     todos = l;
     if (mounted) setState(aplicar);
   }
 
-  void aplicar() => items = todos
-      .where((x) => filtro == 0 || (filtro == 1 && x.type == AssetType.image) || (filtro == 2 && x.type == AssetType.video))
-      .toList();
+  void aplicar() {
+    final f = todos
+        .where((x) => filtro == 0 || (filtro == 1 && x.type == AssetType.image) || (filtro == 2 && x.type == AssetType.video))
+        .toList();
+    items = nuevasPrimero ? f : f.reversed.toList();
+  }
 
   void irA(DateTime dia, double ancho) {
     final fin = DateTime(dia.year, dia.month, dia.day, 23, 59, 59);
-    final idx = items.indexWhere((a) => !a.createDateTime.isAfter(fin));
+    final inicio = DateTime(dia.year, dia.month, dia.day);
+    final idx = nuevasPrimero
+        ? items.indexWhere((a) => !a.createDateTime.isAfter(fin))
+        : items.indexWhere((a) => !a.createDateTime.isBefore(inicio));
     if (idx < 0 || !sc.hasClients) return;
     final celda = (ancho - 12 - 6 * (cols - 1)) / cols;
     final off = ((idx ~/ cols) * (celda + 6)).clamp(0.0, sc.position.maxScrollExtent).toDouble();
@@ -354,11 +368,18 @@ class _Al extends State<Album> {
                     onTap: () => calendario(c),
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(widget.path.isAll ? 'Todo' : widget.path.name, style: _blanco, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      Text(fecha(DateTime.now()), style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                      Text('${fecha(DateTime.now())} · ${nuevasPrimero ? 'nuevas primero' : 'viejas primero'}',
+                          style: const TextStyle(color: Colors.white70, fontSize: 12)),
                     ]),
                   ),
                 ),
                 IconButton(icon: const Icon(Icons.calendar_month, color: Colors.white), onPressed: () => calendario(c)),
+                IconButton(
+                    icon: const Icon(Icons.swap_vert, color: Colors.white),
+                    onPressed: () => setState(() {
+                          nuevasPrimero = !nuevasPrimero;
+                          aplicar();
+                        })),
                 IconButton(
                     icon: const Icon(Icons.grid_view, color: Colors.white),
                     onPressed: () => setState(() => cols = tamanos[(tamanos.indexOf(cols) + 1) % tamanos.length])),
@@ -423,6 +444,33 @@ class _Al extends State<Album> {
             ),
           ]),
         ),
+        Positioned(
+          right: 12,
+          bottom: 24,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            FloatingActionButton.small(
+              heroTag: null,
+              backgroundColor: Colors.white30,
+              elevation: 0,
+              onPressed: () {
+                if (sc.hasClients) sc.animateTo(0, duration: const Duration(milliseconds: 500), curve: Curves.easeOut);
+              },
+              child: const Icon(Icons.keyboard_double_arrow_up, color: Colors.white),
+            ),
+            const SizedBox(height: 8),
+            FloatingActionButton.small(
+              heroTag: null,
+              backgroundColor: Colors.white30,
+              elevation: 0,
+              onPressed: () {
+                if (sc.hasClients) {
+                  sc.animateTo(sc.position.maxScrollExtent, duration: const Duration(milliseconds: 500), curve: Curves.easeOut);
+                }
+              },
+              child: const Icon(Icons.keyboard_double_arrow_down, color: Colors.white),
+            ),
+          ]),
+        ),
       ]),
     );
   }
@@ -441,6 +489,7 @@ class _V extends State<Visor> {
   late final PageController pc = PageController(initialPage: widget.i);
   final bloqueo = ValueNotifier<bool>(false); // true = toques bloqueados en vídeo
   final ui = ValueNotifier<bool>(true); // false = interfaz oculta mientras se ve un vídeo
+  final zoom = ValueNotifier<bool>(false); // true = foto ampliada
   late int cur = widget.i;
   Timer? tm;
 
@@ -449,6 +498,7 @@ class _V extends State<Visor> {
     tm?.cancel();
     bloqueo.dispose();
     ui.dispose();
+    zoom.dispose();
     super.dispose();
   }
 
@@ -496,24 +546,22 @@ class _V extends State<Visor> {
           child: Image(image: mini(a, 200), fit: BoxFit.cover),
         ),
         Container(color: Colors.black26),
-        ValueListenableBuilder<bool>(
-          valueListenable: bloqueo,
-          builder: (_, b, __) => PageView.builder(
+        AnimatedBuilder(
+          animation: Listenable.merge([bloqueo, zoom]),
+          builder: (_, __) => PageView.builder(
             controller: pc,
-            physics: b ? const NeverScrollableScrollPhysics() : null,
+            physics: (bloqueo.value || zoom.value) ? const NeverScrollableScrollPhysics() : null,
             itemCount: widget.items.length,
             onPageChanged: (n) {
               ui.value = true;
+              zoom.value = false;
               setState(() => cur = n);
             },
             itemBuilder: (_, n) {
               final x = widget.items[n];
               return x.type == AssetType.video
                   ? VideoPag(x, bloqueo, ui)
-                  : InteractiveViewer(
-                      minScale: 0.3,
-                      maxScale: 8,
-                      child: Center(child: Image(image: AssetEntityImageProvider(x, isOriginal: true), fit: BoxFit.contain)));
+                  : FotoPag(x, zoom);
             },
           ),
         ),
@@ -936,6 +984,84 @@ class _P extends State<Papelera> with WidgetsBindingObserver {
           ]),
         ),
       ]),
+    );
+  }
+}
+
+// ───────────── Foto con zoom: pellizco, doble toque y movimiento libre ─────────────
+class FotoPag extends StatefulWidget {
+  final AssetEntity a;
+  final ValueNotifier<bool> zoom;
+  const FotoPag(this.a, this.zoom, {super.key});
+  @override
+  State<FotoPag> createState() => _FP();
+}
+
+class _FP extends State<FotoPag> with SingleTickerProviderStateMixin {
+  final tc = TransformationController();
+  late final AnimationController ac = AnimationController(vsync: this, duration: const Duration(milliseconds: 220));
+  Animation<Matrix4>? anim;
+  Offset toque = Offset.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    tc.addListener(() {
+      final z = tc.value.getMaxScaleOnAxis() > 1.02;
+      if (widget.zoom.value != z) widget.zoom.value = z;
+    });
+    ac.addListener(() {
+      if (anim != null) tc.value = anim!.value;
+    });
+  }
+
+  @override
+  void dispose() {
+    ac.dispose();
+    tc.dispose();
+    super.dispose();
+  }
+
+  // Doble toque: acerca a 2.5x justo donde tocaste; otro doble toque vuelve al tamaño normal.
+  void doble() {
+    final m = tc.value;
+    final Matrix4 fin;
+    if (m.getMaxScaleOnAxis() > 1.02) {
+      fin = Matrix4.identity();
+    } else {
+      const s = 2.5;
+      fin = Matrix4.identity()
+        ..setEntry(0, 0, s)
+        ..setEntry(1, 1, s)
+        ..setEntry(0, 3, toque.dx * (1 - s))
+        ..setEntry(1, 3, toque.dy * (1 - s));
+    }
+    anim = Matrix4Tween(begin: m, end: fin).animate(CurvedAnimation(parent: ac, curve: Curves.easeOut));
+    ac.forward(from: 0);
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    return GestureDetector(
+      onDoubleTapDown: (d) => toque = d.localPosition,
+      onDoubleTap: doble,
+      // Con la foto ampliada se mueve libre en las cuatro direcciones; sin ampliar, el deslizar cambia de foto.
+      child: ValueListenableBuilder<bool>(
+        valueListenable: widget.zoom,
+        builder: (_, z, __) => InteractiveViewer(
+          transformationController: tc,
+          panEnabled: z,
+          minScale: 0.3,
+          maxScale: 8,
+          child: Center(
+            // La miniatura sale al instante y la foto completa la reemplaza cuando termina de cargar.
+            child: Stack(fit: StackFit.expand, children: [
+              Image(image: mini(widget.a, 500), fit: BoxFit.contain),
+              Image(image: AssetEntityImageProvider(widget.a, isOriginal: true), fit: BoxFit.contain, gaplessPlayback: true),
+            ]),
+          ),
+        ),
+      ),
     );
   }
 }
