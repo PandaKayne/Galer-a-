@@ -8,8 +8,8 @@ import 'package:video_player/video_player.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  PaintingBinding.instance.imageCache.maximumSize = 1000;
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 250 << 20;
+  PaintingBinding.instance.imageCache.maximumSize = 600;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 150 << 20;
   runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: Albumes()));
 }
 
@@ -19,6 +19,7 @@ const _meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 
 String fecha(DateTime t) => '${_dias[t.weekday - 1]} ${t.day} de ${_meses[t.month - 1]}';
 int clave(DateTime t) => t.year * 10000 + t.month * 100 + t.day;
 const _blanco = TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600);
+int visores = 0; // visores de foto abiertos: mientras haya uno, no se recarga la galería
 
 Widget cristal(Widget child) => ClipRRect(
       borderRadius: BorderRadius.circular(22),
@@ -84,11 +85,17 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _deb?.cancel();
     PhotoManager.removeChangeCallback(_cb);
     super.dispose();
   }
 
-  void _cb(MethodCall c) => _cargar();
+  Timer? _deb;
+  void _cb(MethodCall c) {
+    if (visores > 0) return; // con una foto abierta no se recarga nada
+    _deb?.cancel();
+    _deb = Timer(const Duration(milliseconds: 700), _cargar);
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
@@ -177,7 +184,7 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
                         final x = paths[n];
                         final pa = portada[x.id];
                         return GestureDetector(
-                          onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => Album(x, fondo))),
+                          onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => Album(x, fondo))).then((_) => _cargar()),
                           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Expanded(
                               child: ClipRRect(
@@ -246,12 +253,18 @@ class _Al extends State<Album> {
 
   @override
   void dispose() {
+    _deb?.cancel();
     PhotoManager.removeChangeCallback(_cb);
     sc.dispose();
     super.dispose();
   }
 
-  void _cb(MethodCall c) => _cargar();
+  Timer? _deb;
+  void _cb(MethodCall c) {
+    if (visores > 0) return; // con una foto abierta no se recarga nada
+    _deb?.cancel();
+    _deb = Timer(const Duration(milliseconds: 700), _cargar);
+  }
 
   Future<void> _cargar() async {
     final total = await widget.path.assetCountAsync;
@@ -416,7 +429,7 @@ class _Al extends State<Album> {
                           if (!sel.remove(a.id)) sel.add(a.id);
                         });
                       } else {
-                        Navigator.push(c, MaterialPageRoute(builder: (_) => Visor(items, n)));
+                        Navigator.push(c, MaterialPageRoute(builder: (_) => Visor(items, n))).then((_) => _cargar());
                       }
                     },
                     onLongPress: () => setState(() => sel.add(a.id)),
@@ -494,7 +507,14 @@ class _V extends State<Visor> {
   Timer? tm;
 
   @override
+  void initState() {
+    super.initState();
+    visores++;
+  }
+
+  @override
   void dispose() {
+    visores--;
     tm?.cancel();
     bloqueo.dispose();
     ui.dispose();
@@ -561,7 +581,7 @@ class _V extends State<Visor> {
               final x = widget.items[n];
               return x.type == AssetType.video
                   ? VideoPag(x, bloqueo, ui)
-                  : FotoPag(x, zoom);
+                  : FotoPag(x, zoom, key: ValueKey(x.id));
             },
           ),
         ),
@@ -633,6 +653,18 @@ class _VP extends State<VideoPag> {
     if (mounted) setState(() {});
   }
 
+  bool _despierta = false;
+
+  // Mantiene la pantalla encendida solo mientras el vídeo se está reproduciendo.
+  Future<void> _pantalla() async {
+    final on = v?.value.isPlaying == true;
+    if (on == _despierta) return;
+    _despierta = on;
+    try {
+      await const MethodChannel('wallpaper').invokeMethod('pantalla', {'on': on});
+    } catch (_) {}
+  }
+
   // Muestra los controles y los oculta solos a los 3 s si el vídeo se está reproduciendo.
   void mostrar() {
     t?.cancel();
@@ -648,7 +680,12 @@ class _VP extends State<VideoPag> {
     widget.ui.addListener(_r);
     widget.a.file.then((f) {
       if (f == null) return;
-      v = VideoPlayerController.file(f)..initialize().then((_) => mounted ? setState(() {}) : null);
+      v = VideoPlayerController.file(f)
+        ..initialize().then((_) {
+          if (!mounted) return;
+          setState(() {});
+          v?.addListener(_pantalla);
+        });
     });
   }
 
@@ -656,6 +693,7 @@ class _VP extends State<VideoPag> {
   void dispose() {
     t?.cancel();
     widget.ui.removeListener(_r);
+    const MethodChannel('wallpaper').invokeMethod('pantalla', {'on': false});
     v?.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -1002,6 +1040,7 @@ class _FP extends State<FotoPag> with SingleTickerProviderStateMixin {
   late final AnimationController ac = AnimationController(vsync: this, duration: const Duration(milliseconds: 220));
   Animation<Matrix4>? anim;
   Offset toque = Offset.zero;
+  late final ImageProvider orig = ResizeImage(AssetEntityImageProvider(widget.a, isOriginal: true), width: 2400);
 
   @override
   void initState() {
@@ -1046,20 +1085,16 @@ class _FP extends State<FotoPag> with SingleTickerProviderStateMixin {
       onDoubleTapDown: (d) => toque = d.localPosition,
       onDoubleTap: doble,
       // Con la foto ampliada se mueve libre en las cuatro direcciones; sin ampliar, el deslizar cambia de foto.
-      child: ValueListenableBuilder<bool>(
-        valueListenable: widget.zoom,
-        builder: (_, z, __) => InteractiveViewer(
-          transformationController: tc,
-          panEnabled: z,
-          minScale: 0.3,
-          maxScale: 8,
-          child: Center(
-            // La miniatura sale al instante y la foto completa la reemplaza cuando termina de cargar.
-            child: Stack(fit: StackFit.expand, children: [
-              Image(image: mini(widget.a, 500), fit: BoxFit.contain),
-              Image(image: AssetEntityImageProvider(widget.a, isOriginal: true), fit: BoxFit.contain, gaplessPlayback: true),
-            ]),
-          ),
+      child: InteractiveViewer(
+        transformationController: tc,
+        minScale: 0.3,
+        maxScale: 8,
+        child: Center(
+          // La miniatura sale al instante y la foto completa la reemplaza cuando termina de cargar.
+          child: Stack(fit: StackFit.expand, children: [
+            Image(image: mini(widget.a, 500), fit: BoxFit.contain),
+            Image(image: orig, fit: BoxFit.contain, gaplessPlayback: true),
+          ]),
         ),
       ),
     );

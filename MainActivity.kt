@@ -16,6 +16,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Size
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -32,9 +33,19 @@ class MainActivity : FlutterActivity() {
                 "pedir" -> pedirPermiso(result)
                 "papelera" -> papelera(result)
                 "accion" -> accion(call.argument<List<*>>("ids"), call.argument<List<*>>("videos"), call.argument<Boolean>("borrar") ?: false, result)
+                "pantalla" -> {
+                    pantalla(call.argument<Boolean>("on") ?: false)
+                    result.success(true)
+                }
                 else -> fondo(result)
             }
         }
+    }
+
+    // ── Mantener la pantalla encendida mientras se ve un vídeo ──
+    private fun pantalla(on: Boolean) {
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     // ── Compartir ──
