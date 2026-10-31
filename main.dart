@@ -116,6 +116,21 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
     }
   }
 
+  final _pidiendo = <String>{};
+
+  // Pide la cantidad y la portada de un álbum solo cuando su casilla aparece en pantalla.
+  Future<void> _dato(AssetPathEntity x) async {
+    if (cuenta.containsKey(x.id) || !_pidiendo.add(x.id)) return;
+    try {
+      final n = await x.assetCountAsync;
+      final r = n == 0 ? <AssetEntity>[] : await x.getAssetListRange(start: 0, end: 1);
+      cuenta[x.id] = n;
+      portada[x.id] = r.isEmpty ? null : r.first;
+    } catch (_) {}
+    _pidiendo.remove(x.id);
+    if (mounted) setState(() {});
+  }
+
   Future<void> _init() async {
     _fondo();
     final p = await PhotoManager.requestPermissionExtend();
@@ -132,14 +147,9 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
     final l = await PhotoManager.getAssetPathList(
       filterOption: FilterOptionGroup(orders: [const OrderOption(type: OrderOptionType.createDate, asc: false)]),
     );
-    await Future.wait(l.map((x) async {
-      cuenta[x.id] = await x.assetCountAsync;
-      final r = await x.getAssetListRange(start: 0, end: 1);
-      portada[x.id] = r.isEmpty ? null : r.first;
-    }));
-    l.removeWhere((x) => cuenta[x.id] == 0);
-    l.sort((a, b) => a.isAll ? -1 : (b.isAll ? 1 : cuenta[b.id]!.compareTo(cuenta[a.id]!)));
-    if (mounted) setState(() => paths = l);
+    cuenta.clear();
+    portada.clear();
+    if (mounted) setState(() => paths = [...l.where((x) => x.isAll), ...l.where((x) => !x.isAll)]);
   }
 
   @override
@@ -183,6 +193,7 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
                       itemBuilder: (_, n) {
                         final x = paths[n];
                         final pa = portada[x.id];
+                        _dato(x);
                         return GestureDetector(
                           onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => Album(x, fondo))).then((_) => _cargar()),
                           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -207,7 +218,7 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                            Text('${cuenta[x.id]}', style: const TextStyle(color: Colors.white70)),
+                            Text('${cuenta[x.id] ?? ''}', style: const TextStyle(color: Colors.white70)),
                           ]),
                         );
                       },
@@ -248,6 +259,9 @@ class _Al extends State<Album> {
   void initState() {
     super.initState();
     PhotoManager.addChangeCallback(_cb);
+    sc.addListener(() {
+      if (sc.hasClients && sc.position.pixels > sc.position.maxScrollExtent - 2500) _mas();
+    });
     _cargar();
   }
 
@@ -263,30 +277,102 @@ class _Al extends State<Album> {
   void _cb(MethodCall c) {
     if (visores > 0) return; // con una foto abierta no se recarga nada
     _deb?.cancel();
-    _deb = Timer(const Duration(milliseconds: 700), _cargar);
+    _deb = Timer(const Duration(milliseconds: 700), () => _cargar(mantener: true));
   }
 
-  Future<void> _cargar() async {
-    final total = await widget.path.assetCountAsync;
-    final l = List<AssetEntity>.of(await widget.path.getAssetListRange(start: 0, end: total));
-    l.sort((a, b) => b.createDateTime.compareTo(a.createDateTime)); // siempre de la más nueva a la más vieja
-    todos = l;
-    if (mounted) setState(aplicar);
+  // ── Carga por páginas: así una carpeta de miles de fotos abre al instante ──
+  static const pag = 240;
+  int total = 0, cargados = 0, gen = 0;
+  bool nativoDesc = true, dirOk = false, cargando = false, recargando = false;
+
+  // Pide `n` elementos a partir de la posición `p0` en el orden elegido (nuevas o viejas primero).
+  Future<List<AssetEntity>> trozo(int p0, int n) async {
+    if (n <= 0) return [];
+    final mismo = nuevasPrimero == nativoDesc;
+    final ini = mismo ? p0 : total - p0 - n;
+    final l = await widget.path.getAssetListRange(start: ini, end: ini + n);
+    return mismo ? l : l.reversed.toList();
+  }
+
+  Future<void> _cargar({bool mantener = false}) async {
+    final g = ++gen;
+    recargando = true;
+    try {
+      final pedir = mantener && cargados > pag ? (cargados > 1500 ? 1500 : cargados) : pag;
+      total = await widget.path.assetCountAsync;
+      if (!dirOk && total > 1) {
+        // Detecta en qué sentido devuelve Android las fotos, para pedir primero las que corresponden.
+        final a = await widget.path.getAssetListRange(start: 0, end: 1);
+        final b = await widget.path.getAssetListRange(start: total - 1, end: total);
+        if (a.isNotEmpty && b.isNotEmpty) {
+          nativoDesc = !a.first.createDateTime.isBefore(b.first.createDateTime);
+          dirOk = true;
+        }
+      }
+      final l = await trozo(0, pedir > total ? total : pedir);
+      if (g != gen || !mounted) return;
+      todos = l;
+      cargados = l.length;
+      cargando = false;
+      setState(aplicar);
+    } finally {
+      if (g == gen) recargando = false;
+    }
+    if (g == gen) _llenar();
+  }
+
+  Future<void> _mas() async {
+    if (cargando || recargando || cargados >= total) return;
+    cargando = true;
+    final g = gen;
+    final n = (total - cargados) < pag ? (total - cargados) : pag;
+    final l = await trozo(cargados, n);
+    cargando = false;
+    if (g != gen || !mounted) return;
+    cargados += l.isEmpty ? total : l.length;
+    todos = [...todos, ...l];
+    setState(aplicar);
+  }
+
+  // Si el filtro deja pocas fotos en pantalla, sigue cargando hasta llenar.
+  Future<void> _llenar() async {
+    while (mounted && cargados < total && items.length < 60) {
+      if (cargando || recargando) {
+        await Future.delayed(const Duration(milliseconds: 80));
+        continue;
+      }
+      final antes = cargados;
+      await _mas();
+      if (cargados == antes) break;
+    }
   }
 
   void aplicar() {
     final f = todos
         .where((x) => filtro == 0 || (filtro == 1 && x.type == AssetType.image) || (filtro == 2 && x.type == AssetType.video))
         .toList();
-    items = nuevasPrimero ? f : f.reversed.toList();
+    items = f;
   }
 
-  void irA(DateTime dia, double ancho) {
+  Future<void> irA(DateTime dia, double ancho) async {
     final fin = DateTime(dia.year, dia.month, dia.day, 23, 59, 59);
     final inicio = DateTime(dia.year, dia.month, dia.day);
-    final idx = nuevasPrimero
+    int buscar() => nuevasPrimero
         ? items.indexWhere((a) => !a.createDateTime.isAfter(fin))
         : items.indexWhere((a) => !a.createDateTime.isBefore(inicio));
+    var idx = buscar();
+    // Si ese día aún no está cargado, sigue cargando hasta llegar a él.
+    while (idx < 0 && mounted && cargados < total) {
+      if (cargando || recargando) {
+        await Future.delayed(const Duration(milliseconds: 80));
+        continue;
+      }
+      final antes = cargados;
+      await _mas();
+      if (cargados == antes) break;
+      idx = buscar();
+    }
+    await WidgetsBinding.instance.endOfFrame;
     if (idx < 0 || !sc.hasClients) return;
     final celda = (ancho - 12 - 6 * (cols - 1)) / cols;
     final off = ((idx ~/ cols) * (celda + 6)).clamp(0.0, sc.position.maxScrollExtent).toDouble();
@@ -389,10 +475,10 @@ class _Al extends State<Album> {
                 IconButton(icon: const Icon(Icons.calendar_month, color: Colors.white), onPressed: () => calendario(c)),
                 IconButton(
                     icon: const Icon(Icons.swap_vert, color: Colors.white),
-                    onPressed: () => setState(() {
-                          nuevasPrimero = !nuevasPrimero;
-                          aplicar();
-                        })),
+                    onPressed: () {
+                      setState(() => nuevasPrimero = !nuevasPrimero);
+                      _cargar();
+                    }),
                 IconButton(
                     icon: const Icon(Icons.grid_view, color: Colors.white),
                     onPressed: () => setState(() => cols = tamanos[(tamanos.indexOf(cols) + 1) % tamanos.length])),
@@ -406,10 +492,13 @@ class _Al extends State<Album> {
                   child: ChoiceChip(
                     label: Text(e.value),
                     selected: filtro == e.key,
-                    onSelected: (_) => setState(() {
-                      filtro = e.key;
-                      aplicar();
-                    }),
+                    onSelected: (_) {
+                      setState(() {
+                        filtro = e.key;
+                        aplicar();
+                      });
+                      _llenar();
+                    },
                   ),
                 ),
             ]),
@@ -429,14 +518,14 @@ class _Al extends State<Album> {
                           if (!sel.remove(a.id)) sel.add(a.id);
                         });
                       } else {
-                        Navigator.push(c, MaterialPageRoute(builder: (_) => Visor(items, n))).then((_) => _cargar());
+                        Navigator.push(c, MaterialPageRoute(builder: (_) => Visor(items, n))).then((_) => _cargar(mantener: true));
                       }
                     },
                     onLongPress: () => setState(() => sel.add(a.id)),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(14),
                       child: Stack(fit: StackFit.expand, children: [
-                        Image(image: mini(a), fit: BoxFit.cover),
+                        Image(image: mini(a, cols >= 6 ? 160 : 300), fit: BoxFit.cover),
                         DecoratedBox(
                             decoration: BoxDecoration(
                                 gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.center,
@@ -475,7 +564,18 @@ class _Al extends State<Album> {
               heroTag: null,
               backgroundColor: Colors.white30,
               elevation: 0,
-              onPressed: () {
+              onPressed: () async {
+                // Carga todo lo que falta para poder llegar hasta el final.
+                while (mounted && cargados < total) {
+                  if (cargando || recargando) {
+                    await Future.delayed(const Duration(milliseconds: 80));
+                    continue;
+                  }
+                  final antes = cargados;
+                  await _mas();
+                  if (cargados == antes) break;
+                }
+                await WidgetsBinding.instance.endOfFrame;
                 if (sc.hasClients) {
                   sc.animateTo(sc.position.maxScrollExtent, duration: const Duration(milliseconds: 500), curve: Curves.easeOut);
                 }
