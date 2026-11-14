@@ -748,6 +748,17 @@ class _VP extends State<VideoPag> {
   int vel = 1;
   bool loop = false, horiz = false;
   Timer? t;
+  bool verCandado = false;
+  Timer? tcand;
+
+  // Con el vídeo bloqueado, el candado se muestra 3 segundos al tocar la pantalla y luego se esconde solo.
+  void candado() {
+    tcand?.cancel();
+    setState(() => verCandado = true);
+    tcand = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => verCandado = false);
+    });
+  }
 
   void _r() {
     if (mounted) setState(() {});
@@ -792,6 +803,7 @@ class _VP extends State<VideoPag> {
   @override
   void dispose() {
     t?.cancel();
+    tcand?.cancel();
     widget.ui.removeListener(_r);
     const MethodChannel('wallpaper').invokeMethod('pantalla', {'on': false});
     v?.dispose();
@@ -820,7 +832,7 @@ class _VP extends State<VideoPag> {
       builder: (_, bloq, __) => Stack(alignment: Alignment.center, children: [
         GestureDetector(
           onTap: bloq
-              ? null
+              ? candado
               : () {
                   if (ver) {
                     t?.cancel();
@@ -846,7 +858,7 @@ class _VP extends State<VideoPag> {
                     mostrar();
                   }),
         ),
-        if (bloq)
+        if (bloq && verCandado)
           Align(
             alignment: Alignment.centerRight,
             child: GestureDetector(
@@ -863,7 +875,7 @@ class _VP extends State<VideoPag> {
               ),
             ),
           )
-        else if (ver)
+        else if (!bloq && ver)
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -912,7 +924,10 @@ class _VP extends State<VideoPag> {
                           setState(() {});
                         },
                         child: Text('${vels[vel]}x', style: const TextStyle(color: Colors.white))),
-                    IconButton(icon: const Icon(Icons.lock_open, color: Colors.white), onPressed: () => widget.bloqueo.value = true),
+                    IconButton(icon: const Icon(Icons.lock_open, color: Colors.white), onPressed: () {
+                      widget.bloqueo.value = true;
+                      candado();
+                    }),
                   ]),
                   Row(children: [
                     Icon(vol == 0 ? Icons.volume_off : (vol < .5 ? Icons.volume_down : Icons.volume_up), color: Colors.white),
