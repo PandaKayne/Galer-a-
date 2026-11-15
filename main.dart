@@ -163,7 +163,7 @@ class _A extends State<Albumes> with WidgetsBindingObserver {
               padding: const EdgeInsets.all(12),
               child: cristal(Row(children: [
                 Expanded(child: Text(fecha(DateTime.now()), style: _blanco)),
-                Text('${paths.length} álbumes', style: const TextStyle(color: Colors.white70)),
+                Text('${paths.length} álbumes · v12', style: const TextStyle(color: Colors.white70)),
                 IconButton(
                     icon: const Icon(Icons.delete_outline, color: Colors.white),
                     onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) => Papelera(fondo)))),
