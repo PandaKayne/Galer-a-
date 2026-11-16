@@ -23,9 +23,11 @@ jobs:
           flutter create --org com.example --project-name galeria_cristal --platforms=android app
           cp main.dart app/lib/main.dart
           cp MainActivity.kt app/android/app/src/main/kotlin/com/example/galeria_cristal/MainActivity.kt
+          # Desactiva el análisis "lint" de Android (falla por un error de la propia herramienta y no hace falta para el APK).
+          # Se hace con un script global de Gradle, así no depende de los archivos del proyecto.
+          mkdir -p ~/.gradle/init.d
+          printf '%s\n' "allprojects {" "    tasks.configureEach { t ->" "        if (t.name.startsWith('lint')) { t.enabled = false }" "    }" "}" > ~/.gradle/init.d/sin-lint.gradle
           cd app
-          # Desactiva el análisis "lint" de Android: falla por un error de la propia herramienta y no hace falta para el APK
-          printf '\nsubprojects {\n    tasks.configureEach {\n        if (name.startsWith("lintVital")) enabled = false\n    }\n}\n' >> android/build.gradle.kts
           flutter pub add photo_manager photo_manager_image_provider video_player
           sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>\n    <application#' android/app/src/main/AndroidManifest.xml
 
